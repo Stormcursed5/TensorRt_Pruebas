@@ -30,7 +30,7 @@ MODEL_PARAMS_PATH = "fasionmnist_mlp_params.pkl"
 DEVICE = "cuda"
 
 # Dataset configuration
-BATCH_SIZE = 32
+BATCH_SIZE = 8192
 FEATURE_DIM_28 = 784  # 28x28 flattened
 FEATURE_DIM_128 = 16384  # 128x128 flattened
 FEATURE_DIM_512 = 262144  # 512x512 flattened
@@ -130,29 +130,31 @@ def benchmark(model_name, model_info, test_samples, model_results, model, precis
             inputs = inputs.half()
         
 
-        #Inferencia
+        
         inputs = inputs.to(DEVICE)
+        #Modo Inferencia
+        if is_trt_engine:
+            context = model.create_execution_context()
+            output_shape = tuple(model.get_binding_shape(1))
+            output_tensor = torch.empty(output_shape, dtype=torch.float32, device=DEVICE)
+            bindings = [int(inputs.data_ptr()), int(output_tensor.data_ptr())]
+        else:
+            model.eval()
+            model.to(DEVICE)
+
+            #Info debug
+            if idx == 1:
+                print("Input shape:", inputs.shape)
+                print("Input dtype:", inputs.dtype)
+
+        #Inferencia
         with autocast(dtype=precision), torch.inference_mode():
             if is_trt_engine:
-                context = model.create_execution_context()
-                output_shape = tuple(model.get_binding_shape(1))
-                output_tensor = torch.empty(output_shape, dtype=torch.float32, device=DEVICE)
-                bindings = [int(inputs.data_ptr()), int(output_tensor.data_ptr())]
+                bindings[0] = int(inputs.data_ptr())
+                context.execute_v2(bindings)
             else:
-                model.eval()
-                model.to(DEVICE)
-
-        #Info debug
-        if idx == 1:
-            print("Input shape:", inputs.shape)
-            print("Input dtype:", inputs.dtype)
-
-        if is_trt_engine:
-            bindings[0] = int(inputs.data_ptr())
-            context.execute_v2(bindings)
-        else:
-            _ = model(inputs)
-        torch.cuda.synchronize()
+                _ = model(inputs)
+            torch.cuda.synchronize()
         del inputs
     print("Warmup completed")
 
@@ -302,7 +304,8 @@ def anadir_modelos(models, models_to_benchmark, model_type):
 
 def trace_model(name, model, input, dim, precision):
 
-    input = input.reshape(1, dim).float()
+    #input = input.reshape(1, dim).float()
+    input = input.view(input.size(0), -1)  
     if TORCH_COMPILER in name and "fp16" in name:
         input = input.half()
 
